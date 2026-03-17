@@ -19,8 +19,17 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from google.oauth2 import service_account
 
-# --- 1. การตั้งค่าหน้าเว็บและ Config ---
-st.set_page_config(page_title="USO1-Report Manager", layout="wide")
+# --- 1. การตั้งค่าหน้าเว็บและสไตล์ (Theme Chill TALK) ---
+st.set_page_config(page_title="USO1-Report Manager | Chill TALK", layout="wide")
+
+# ปรับสี Progress Bar ให้เป็นสีน้ำเงินตามโลโก้
+st.markdown("""
+    <style>
+        .stProgress > div > div > div > div {
+            background-color: #1d71b8;
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
 GOOGLE_DRIVE_FOLDER_ID = '1-4OwgP-ODbelbtwSg5-m-rm4cyOTcW7O'
 
@@ -89,6 +98,7 @@ def upload_and_overwrite(target_filename, content_bytes):
         st.error(f"❌ อัปโหลดล้มเหลว: {str(e)}")
 
 # --- 3. Utility & PDF Generator ---
+
 def apply_exif_orientation(img):
     try:
         exif = img._getexif()
@@ -184,18 +194,15 @@ def generate_pdf_original_style(df, center_name):
     doc.build(story)
     return buffer.getvalue()
 
-# --- 4. Main UI ---
+# --- 4. Main UI Components ---
 
 if 'main_df' not in st.session_state:
-    try:
-        st.session_state.main_df = pd.read_csv("03-2026.csv").fillna("")
-    except:
-        st.error("❌ ไม่พบไฟล์ CSV"); st.stop()
+    try: st.session_state.main_df = pd.read_csv("03-2026.csv").fillna("")
+    except: st.error("❌ ไม่พบไฟล์ CSV"); st.stop()
 
 if 'img_refresh_keys' not in st.session_state:
     st.session_state.img_refresh_keys = {}
 
-# --- ฟังก์ชันจัดการอัปโหลดรายจุด (Fragment) ---
 @st.fragment
 def image_editor_fragment(idx, col, target_filename):
     refresh_key = st.session_state.img_refresh_keys.get(f"{idx}_{col}", 0)
@@ -204,14 +211,16 @@ def image_editor_fragment(idx, col, target_filename):
         st.image(img_bytes, caption=f"Drive: {target_filename}", use_container_width=True)
     else:
         st.warning(f"❌ ไม่พบรูป: {target_filename}")
+    
     new_f = st.file_uploader(f"เปลี่ยนรูป {col}", type=['jpg','png','jpeg'], key=f"fu_{idx}_{col}_{refresh_key}")
     if new_f:
         with st.spinner("กำลังอัปโหลด..."):
             upload_and_overwrite(target_filename, new_f.getbuffer())
             st.session_state.img_refresh_keys[f"{idx}_{col}"] = refresh_key + 1
-            st.toast("อัปโหลดสำเร็จ!"); time.sleep(0.5); st.rerun()
+            st.toast("อัปโหลดสำเร็จ!")
+            time.sleep(0.5)
+            st.rerun()
 
-# --- ฟังก์ชันแสดงหน้าจอหลัก ---
 def render_main_ui(center):
     with main_container.container():
         st.title(f"🚀 ศูนย์: {center}")
@@ -220,7 +229,7 @@ def render_main_ui(center):
         
         for idx in df_idx:
             row = st.session_state.main_df.loc[idx]
-            # ✅ expanded=True กางข้อมูลออกทั้งหมด
+            # กาง Expander อัตโนมัติ (expanded=True)
             with st.expander(f"📅 {row['date']} - {row['name']}", expanded=True):
                 c = st.columns([2, 2, 1, 1])
                 st.session_state.main_df.at[idx, 'name'] = c[0].text_input("ชื่อ", row['name'], key=f"n_{idx}")
@@ -237,50 +246,62 @@ def render_main_ui(center):
                 pdf = generate_pdf_original_style(st.session_state.main_df.loc[df_idx], center)
                 st.download_button("📥 ดาวน์โหลด PDF", pdf, f"{center}.pdf", "application/pdf", use_container_width=True)
 
-# --- ส่วนควบคุมหลัก ---
+# --- 5. Navigation & Logic Control ---
+
 st.sidebar.title("เมนู")
 
-# ✅ ปรับการเรียงลำดับศูนย์ (Sorting)
-# ดึงค่า unique มาก่อน แล้วใช้ sorted() เพื่อเรียง 1, 2, 3...
-# 1. ดึงชื่อศูนย์ทั้งหมดแบบ unique
+# Natural Sorting Logic (1, 2, 3...)
 unique_centers = st.session_state.main_df['file_name'].unique()
-
-# 2. ใช้ฟังก์ชันเรียงลำดับแบบฉลาด (ดึงตัวเลขหน้าชื่อมาเรียง)
 def natural_sort_key(s):
-    try:
-        # แยกข้อความตรง " - " แล้วเอาส่วนแรก (ตัวเลข) มาแปลงเป็น int
-        return int(str(s).split('-')[0].strip())
-    except:
-        # ถ้าไม่มีตัวเลข หรือแยกไม่ได้ ให้เรียงตามข้อความปกติ
-        return s
+    try: return int(str(s).split('-')[0].strip())
+    except: return s
+centers_sorted = sorted(unique_centers, key=natural_sort_key)
+menu_options = ["--- กรุณาเลือกศูนย์ที่ต้องการตรวจ ---"] + centers_sorted
 
-# 3. สั่งเรียงลำดับโดยใช้ key ที่เราสร้างไว้
-centers = sorted(unique_centers, key=natural_sort_key)
-
-# 4. นำไปใส่ใน selectbox เหมือนเดิม
-sel_center = st.sidebar.selectbox("เลือกศูนย์", centers)
-
+sel_center = st.sidebar.selectbox("เลือกศูนย์", menu_options)
 main_container = st.empty()
 
-if sel_center:
+if sel_center == "--- กรุณาเลือกศูนย์ที่ต้องการตรวจ ---":
+    with main_container.container():
+        st.write("")
+        col1, col2, col3 = st.columns([1, 1.2, 1])
+        with col2:
+            try: st.image("logo.png", width=280)
+            except: st.markdown("### 🎨 Chill TALK Management System")
+        
+        st.markdown("<h1 style='text-align: center;'>ระบบจัดการรายงาน USO1</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: #1d71b8;'><b>บริษัท ชิลล์ ทอล์ค จำกัด (Chill TALK Co., Ltd.)</b></p>", unsafe_allow_html=True)
+        st.divider()
+        st.info("""
+        **📋 ขั้นตอนการทำงาน:**
+        1. **เลือกศูนย์** จากเมนูทางซ้าย 
+        2. **รอหลอดโหลดสีน้ำเงิน** จนครบ 100% เพื่อดึงรูปภาพจาก Cloud Google drive ที่ทุกคนเคยส่งมาให้ครับ
+        3. **ตรวจสอบงาน** ข้อมูลทุกวันจะแสดงออกให้อัตโนมัติ เลื่อนลงเพื่อดูได้ทันทีค้าบบ
+        4. **บันทึกข้อมูล** เมื่อต้องการแก้ไข ชื่อ-นามสกุล ตำแหน่ง เวลลาเข้า และ ออกครับ เสร็จแล้วอย่าลืมกดปุ่ม '💾 บันทึก '
+        """)
+        st.warning("⚠️ **ข้อควรระวัง:** หากตรวจพร้อมกันหลายคน โปรดแบ่งโซนศูนย์ให้ชัดเจนเพื่อป้องกันข้อมูลทับซ้อน")
+
+else:
+    # Logic หลอดโหลดพลังสีน้ำเงิน
     if "current_center" not in st.session_state or st.session_state.current_center != sel_center:
         st.session_state.current_center = sel_center
         progress_container = st.empty()
         with progress_container.container():
-            st.markdown(f"### ✨ กำลังเตรียมข้อมูล: {sel_center}")
+            st.markdown(f"### ⚙️ กำลังดึงข้อมูล: {sel_center}")
             prog_bar = st.progress(0)
             status_text = st.empty()
             target_df = st.session_state.main_df[st.session_state.main_df['file_name'] == sel_center]
             total_rows = len(target_df)
             for i, (idx, r) in enumerate(target_df.iterrows()):
                 percent_complete = int(((i + 1) / total_rows) * 100)
-                status_text.text(f"โหลดข้อมูลวันที่ {r['date']}... ({percent_complete}%)")
+                status_text.text(f"กำลังดึงรูปภาพวันที่ {r['date']}... ({percent_complete}%)")
                 download_image_direct(str(r['img_in1']))
                 download_image_direct(str(r['img_out1']))
                 prog_bar.progress(percent_complete)
-            status_text.text("🚀 พร้อมตรวจสอบ!")
-            time.sleep(0.3)
+            status_text.text("🚀 ระบบพร้อมตรวจสอบ!")
+            time.sleep(0.4)
         progress_container.empty()
+    
     render_main_ui(sel_center)
 
 if st.sidebar.button("💾 บันทึก ", use_container_width=True):
