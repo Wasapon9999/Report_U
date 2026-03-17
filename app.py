@@ -244,15 +244,38 @@ def render_main_ui(center):
 
 # จังหวะโหลดข้อมูล (จะขึ้น Popup สวยๆ เฉพาะตอนเปลี่ยนศูนย์)
 if sel_center:
-    with st.spinner(f"✨ กำลังจัดเตรียมข้อมูลศูนย์ {sel_center}..."):
-        # Pre-download รูปทั้งหมดของศูนย์นี้ใส่ Cache ไว้ก่อน (ทำให้ UI ตอนเปิดลื่นมาก)
+    # 1. สร้างพื้นที่สำหรับหลอดโหลด
+    progress_container = st.empty()
+    
+    with progress_container.container():
+        st.markdown(f"### ✨ กำลังจัดเตรียมข้อมูลศูนย์: {sel_center}")
+        # สร้างหลอดโหลดเริ่มต้นที่ 0%
+        prog_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # ดึงรายการรูปภาพที่ต้องโหลด
         target_df = st.session_state.main_df[st.session_state.main_df['file_name'] == sel_center]
-        for _, r in target_df.iterrows():
+        total_rows = len(target_df)
+        
+        # วนลูปโหลดรูปพร้อมอัปเดตเปอร์เซ็นต์
+        for i, (idx, r) in enumerate(target_df.iterrows()):
+            # อัปเดตข้อความสถานะ
+            percent_complete = int(((i + 1) / total_rows) * 100)
+            status_text.text(f"กำลังดึงข้อมูลวันที่ {r['date']}... ({percent_complete}%)")
+            
+            # ดึงรูปใส่ Cache (ดึงทั้งเข้าและออก)
             download_image_direct(str(r['img_in1']))
             download_image_direct(str(r['img_out1']))
+            
+            # อัปเดตหลอดพลัง
+            prog_bar.progress(percent_complete)
         
-        # เมื่อโหลดเสร็จ ค่อยวาด UI ทีเดียว
-        render_main_ui(sel_center)
+        status_text.text("🚀 เตรียมข้อมูลเสร็จสิ้น! กำลังวาดหน้าจอ...")
+        time.sleep(0.3) # ให้ User ได้เห็นว่าโหลดเสร็จแล้วแป๊บนึง
+
+    # 2. เมื่อโหลดครบ 100% ให้ล้างหลอดโหลดทิ้ง แล้วแสดง UI จริง
+    progress_container.empty()
+    render_main_ui(sel_center)
 
 if st.sidebar.button("💾 บันทึก CSV", use_container_width=True):
     st.session_state.main_df.to_csv("03-2026.csv", index=False)
