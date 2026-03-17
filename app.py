@@ -262,21 +262,23 @@ sel_center = st.sidebar.selectbox("เลือกศูนย์", menu_options
 main_container = st.empty()
 
 if sel_center == "--- กรุณาเลือกศูนย์ที่ต้องการตรวจ ---":
-    # 🌟 แสดงหน้า Welcome พร้อมโลโก้ Chill TALK แบบกึ่งกลาง
+    # 🌟 แสดงหน้า Welcome พร้อมโลโก้ Chill TALK กึ่งกลาง ขนาด 125
     with main_container.container():
         st.write("") 
-        # แบ่งคอลัมน์เป็น 3 ส่วน โดยให้ส่วนกลางกว้างกว่าด้านข้างเล็กน้อยเพื่อความสมดุล
+        # ใช้ columns เพื่อช่วยในการจัดวางกึ่งกลาง
         left_co, cent_co, last_co = st.columns([1, 1, 1])
         with cent_co:
+            # ใช้ CSS ช่วยจัดระเบียบให้กึ่งกลางในคอลัมน์และกำหนด width=125
+            st.markdown("<div style='display: flex; justify-content: center;'>", unsafe_allow_html=True)
             try:
-                # โหลดรูปโลโก้และจัดกึ่งกลาง
-                st.image("logo.JPG",width=125, use_container_width=True)
+                st.image("logo.png", width=125)
             except:
                 st.markdown("<h3 style='text-align: center; color: #1d71b8;'>Chill TALK</h3>", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
         
-        # ส่วนข้อความต้อนรับแบบกึ่งกลาง
-        st.markdown("<h1 style='text-align: center;'>ระบบจัดการรายงาน USO1</h1>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align: center; color: #1d71b8; font-size: 1.2em;'><b>บริษัท ชิลล์ ทอล์ค จำกัด (Chill TALK Co., Ltd.)</b></p>", unsafe_allow_html=True)
+        # ส่วนข้อความต้อนรับ
+        st.markdown("<h1 style='text-align: center; font-size: 2em;'>ระบบจัดการรายงาน USO1</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: #1d71b8; font-size: 1.1em;'><b>บริษัท ชิลล์ ทอล์ค จำกัด (Chill TALK Co., Ltd.)</b></p>", unsafe_allow_html=True)
         st.divider()
             # except: st.markdown("###  ตรวจแก้ไขรายงานเวลาปฏิบัติงาน โครงการ USO1 Renew")
         
