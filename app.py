@@ -262,12 +262,23 @@ sel_center = st.sidebar.selectbox("เลือกศูนย์", menu_options
 main_container = st.empty()
 
 if sel_center == "--- กรุณาเลือกศูนย์ที่ต้องการตรวจ ---":
+    # 🌟 แสดงหน้า Welcome พร้อมโลโก้ Chill TALK แบบกึ่งกลาง
     with main_container.container():
-        st.write("")
-        col1, col2, col3 = st.columns([1, 1.2, 1])
-        with col2:
-            try: st.image("logo.JPG", width=150)
-            except: st.markdown("###  ตรวจแก้ไขรายงานเวลาปฏิบัติงาน โครงการ USO1 Renew")
+        st.write("") 
+        # แบ่งคอลัมน์เป็น 3 ส่วน โดยให้ส่วนกลางกว้างกว่าด้านข้างเล็กน้อยเพื่อความสมดุล
+        left_co, cent_co, last_co = st.columns([1, 1, 1])
+        with cent_co:
+            try:
+                # โหลดรูปโลโก้และจัดกึ่งกลาง
+                st.image("logo.png", use_container_width=True)
+            except:
+                st.markdown("<h3 style='text-align: center; color: #1d71b8;'>Chill TALK</h3>", unsafe_allow_html=True)
+        
+        # ส่วนข้อความต้อนรับแบบกึ่งกลาง
+        st.markdown("<h1 style='text-align: center;'>ระบบจัดการรายงาน USO1</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: #1d71b8; font-size: 1.2em;'><b>บริษัท ชิลล์ ทอล์ค จำกัด (Chill TALK Co., Ltd.)</b></p>", unsafe_allow_html=True)
+        st.divider()
+            # except: st.markdown("###  ตรวจแก้ไขรายงานเวลาปฏิบัติงาน โครงการ USO1 Renew")
         
         st.markdown("<h1 style='text-align: center;'>ระบบจัดการรายงาน USO1</h1>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; color: #1d71b8;'><b>บริษัท ชิลล์ ทอล์ค จำกัด (Chill TALK Co., Ltd.)</b></p>", unsafe_allow_html=True)
