@@ -282,6 +282,6 @@ if sel_center:
     
     render_main_ui(sel_center)
 
-if st.sidebar.button("💾 บันทึก CSV", use_container_width=True):
+if st.sidebar.button("💾 บันทึก ", use_container_width=True):
     st.session_state.main_df.to_csv("03-2026.csv", index=False)
     st.sidebar.success("บันทึกสำเร็จ!")
