@@ -226,9 +226,14 @@ def render_main_ui(center):
         st.title(f"🚀 จัดการข้อมูลศูนย์: {center}")
         df_idx = st.session_state.main_df[st.session_state.main_df['file_name'] == center].index
         
+        # แจ้งเตือนคนตรวจสักนิด
+        st.info("💡 ข้อมูลทุกวันถูกกางออกเรียบร้อยแล้ว คุณสามารถเลื่อนลงเพื่อตรวจงานได้ทันที")
+        
         for idx in df_idx:
             row = st.session_state.main_df.loc[idx]
-            with st.expander(f"📅 {row['date']} - {row['name']}"):
+            
+            # ✅ ปรับ expanded=True เพื่อให้กางข้อมูลออกมาทั้งหมดตั้งแต่แรก
+            with st.expander(f"📅 {row['date']} - {row['name']}", expanded=True):
                 c = st.columns([2, 2, 1, 1])
                 st.session_state.main_df.at[idx, 'name'] = c[0].text_input("ชื่อ", row['name'], key=f"n_{idx}")
                 st.session_state.main_df.at[idx, 'status'] = c[1].text_input("ตำแหน่ง", row['status'], key=f"s_{idx}")
