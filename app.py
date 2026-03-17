@@ -227,7 +227,7 @@ def render_main_ui(center):
         df_idx = st.session_state.main_df[st.session_state.main_df['file_name'] == center].index
         
         # แจ้งเตือนคนตรวจสักนิด
-        st.info("💡 ข้อมูลทุกวันถูกกางออกเรียบร้อยแล้ว คุณสามารถเลื่อนลงเพื่อตรวจงานได้ทันที")
+        st.info("💡 แสดงหน้าข้อมูลทุกวันเรียบร้อยแล้ว สามารถเลื่อนลงเพื่อตรวจงานได้เลยค้าบบ")
         
         for idx in df_idx:
             row = st.session_state.main_df.loc[idx]
