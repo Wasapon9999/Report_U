@@ -84,12 +84,11 @@ def upload_and_overwrite(target_filename, content_bytes):
         file_metadata = {'name': target_filename, 'parents': [GOOGLE_DRIVE_FOLDER_ID]}
         media = MediaIoBaseUpload(BytesIO(content_bytes), mimetype='image/jpeg', resumable=True)
         service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
-        # ✅ ล้างแคชเฉพาะไฟล์ที่อัปโหลด
         download_image_direct.clear(target_filename)
     except Exception as e:
         st.error(f"❌ อัปโหลดล้มเหลว: {str(e)}")
 
-# --- 3. Utility & PDF Generator (คงเดิม) ---
+# --- 3. Utility & PDF Generator ---
 def apply_exif_orientation(img):
     try:
         exif = img._getexif()
@@ -193,58 +192,44 @@ if 'main_df' not in st.session_state:
     except:
         st.error("❌ ไม่พบไฟล์ CSV"); st.stop()
 
-# ✅ ใช้สำหรับควบคุมการเปลี่ยนภาพรายจุดโดยไม่ Rerun ทั้งหน้า
 if 'img_refresh_keys' not in st.session_state:
     st.session_state.img_refresh_keys = {}
 
 # --- ฟังก์ชันจัดการอัปโหลดรายจุด (Fragment) ---
 @st.fragment
 def image_editor_fragment(idx, col, target_filename):
-    # ดึงค่า refresh key เพื่อบังคับให้ Browser โหลดภาพใหม่
     refresh_key = st.session_state.img_refresh_keys.get(f"{idx}_{col}", 0)
-    
     img_bytes = download_image_direct(target_filename)
     if img_bytes:
-        # ใส่ timestamp ใน caption เพื่อให้ UI รู้ว่ามีการเปลี่ยน
         st.image(img_bytes, caption=f"Drive: {target_filename}", use_container_width=True)
     else:
         st.warning(f"❌ ไม่พบรูป: {target_filename}")
-    
     new_f = st.file_uploader(f"เปลี่ยนรูป {col}", type=['jpg','png','jpeg'], key=f"fu_{idx}_{col}_{refresh_key}")
     if new_f:
         with st.spinner("กำลังอัปโหลด..."):
             upload_and_overwrite(target_filename, new_f.getbuffer())
-            # ✅ อัปเดต Refresh Key เฉพาะจุดนี้
             st.session_state.img_refresh_keys[f"{idx}_{col}"] = refresh_key + 1
-            st.toast("อัปโหลดสำเร็จ!")
-            time.sleep(0.5)
-            st.rerun() # rerun เฉพาะใน fragment นี้เท่านั้น ไม่กระทบหลอดโหลดข้างนอก
+            st.toast("อัปโหลดสำเร็จ!"); time.sleep(0.5); st.rerun()
 
 # --- ฟังก์ชันแสดงหน้าจอหลัก ---
 def render_main_ui(center):
     with main_container.container():
-        st.title(f"🚀 จัดการข้อมูลศูนย์: {center}")
+        st.title(f"🚀 ศูนย์: {center}")
         df_idx = st.session_state.main_df[st.session_state.main_df['file_name'] == center].index
-        
-        # แจ้งเตือนคนตรวจสักนิด
-        st.info("💡 แสดงหน้าข้อมูลทุกวันเรียบร้อยแล้ว สามารถเลื่อนลงเพื่อตรวจงานได้เลยค้าบบ")
+        # st.info("💡 ข้อมูลถูกกางออกเรียบร้อยแล้ว ตรวจสอบได้ทันที")
         
         for idx in df_idx:
             row = st.session_state.main_df.loc[idx]
-            
-            # ✅ ปรับ expanded=True เพื่อให้กางข้อมูลออกมาทั้งหมดตั้งแต่แรก
+            # ✅ expanded=True กางข้อมูลออกทั้งหมด
             with st.expander(f"📅 {row['date']} - {row['name']}", expanded=True):
                 c = st.columns([2, 2, 1, 1])
                 st.session_state.main_df.at[idx, 'name'] = c[0].text_input("ชื่อ", row['name'], key=f"n_{idx}")
                 st.session_state.main_df.at[idx, 'status'] = c[1].text_input("ตำแหน่ง", row['status'], key=f"s_{idx}")
                 st.session_state.main_df.at[idx, 'time_in'] = c[2].text_input("เข้า", row['time_in'], key=f"i_{idx}")
                 st.session_state.main_df.at[idx, 'time_out'] = c[3].text_input("ออก", row['time_out'], key=f"o_{idx}")
-
                 c_img = st.columns(2)
-                with c_img[0]:
-                    image_editor_fragment(idx, "img_in1", str(row["img_in1"]))
-                with c_img[1]:
-                    image_editor_fragment(idx, "img_out1", str(row["img_out1"]))
+                with c_img[0]: image_editor_fragment(idx, "img_in1", str(row["img_in1"]))
+                with c_img[1]: image_editor_fragment(idx, "img_out1", str(row["img_out1"]))
 
         st.divider()
         if st.button("🖨️ ออกรายงาน PDF", use_container_width=True, type="primary"):
@@ -254,32 +239,33 @@ def render_main_ui(center):
 
 # --- ส่วนควบคุมหลัก ---
 st.sidebar.title("เมนู")
-centers = st.session_state.main_df['file_name'].unique()
+
+# ✅ ปรับการเรียงลำดับศูนย์ (Sorting)
+# ดึงค่า unique มาก่อน แล้วใช้ sorted() เพื่อเรียง 1, 2, 3...
+centers = sorted(st.session_state.main_df['file_name'].unique())
 sel_center = st.sidebar.selectbox("เลือกศูนย์", centers)
 
 main_container = st.empty()
 
 if sel_center:
-    # เช็คว่าศูนย์ที่เลือกเปลี่ยนไปจากเดิมหรือไม่ ถ้าใช่ค่อยโชว์หลอดโหลด
     if "current_center" not in st.session_state or st.session_state.current_center != sel_center:
         st.session_state.current_center = sel_center
         progress_container = st.empty()
         with progress_container.container():
-            st.markdown(f"### ✨ กำลังจัดเตรียมข้อมูลศูนย์: {sel_center}")
+            st.markdown(f"### ✨ กำลังเตรียมข้อมูล: {sel_center}")
             prog_bar = st.progress(0)
             status_text = st.empty()
             target_df = st.session_state.main_df[st.session_state.main_df['file_name'] == sel_center]
             total_rows = len(target_df)
             for i, (idx, r) in enumerate(target_df.iterrows()):
                 percent_complete = int(((i + 1) / total_rows) * 100)
-                status_text.text(f"กำลังดึงข้อมูลวันที่ {r['date']}... ({percent_complete}%)")
+                status_text.text(f"โหลดข้อมูลวันที่ {r['date']}... ({percent_complete}%)")
                 download_image_direct(str(r['img_in1']))
                 download_image_direct(str(r['img_out1']))
                 prog_bar.progress(percent_complete)
-            status_text.text("🚀 เตรียมข้อมูลเสร็จสิ้น!")
+            status_text.text("🚀 พร้อมตรวจสอบ!")
             time.sleep(0.3)
         progress_container.empty()
-    
     render_main_ui(sel_center)
 
 if st.sidebar.button("💾 บันทึก ", use_container_width=True):
