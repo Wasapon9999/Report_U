@@ -242,7 +242,22 @@ st.sidebar.title("เมนู")
 
 # ✅ ปรับการเรียงลำดับศูนย์ (Sorting)
 # ดึงค่า unique มาก่อน แล้วใช้ sorted() เพื่อเรียง 1, 2, 3...
-centers = sorted(st.session_state.main_df['file_name'].unique())
+# 1. ดึงชื่อศูนย์ทั้งหมดแบบ unique
+unique_centers = st.session_state.main_df['file_name'].unique()
+
+# 2. ใช้ฟังก์ชันเรียงลำดับแบบฉลาด (ดึงตัวเลขหน้าชื่อมาเรียง)
+def natural_sort_key(s):
+    try:
+        # แยกข้อความตรง " - " แล้วเอาส่วนแรก (ตัวเลข) มาแปลงเป็น int
+        return int(str(s).split('-')[0].strip())
+    except:
+        # ถ้าไม่มีตัวเลข หรือแยกไม่ได้ ให้เรียงตามข้อความปกติ
+        return s
+
+# 3. สั่งเรียงลำดับโดยใช้ key ที่เราสร้างไว้
+centers = sorted(unique_centers, key=natural_sort_key)
+
+# 4. นำไปใส่ใน selectbox เหมือนเดิม
 sel_center = st.sidebar.selectbox("เลือกศูนย์", centers)
 
 main_container = st.empty()
