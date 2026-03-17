@@ -295,7 +295,7 @@ centers = st.session_state.main_df['file_name'].unique()
 sel_center = st.sidebar.selectbox(
     "เลือกศูนย์", centers, on_change=lambda: st.cache_data.clear())
 
-if st.sidebar.button("💾 บันทึก CSV", use_container_width=True):
+if st.sidebar.button("💾 บันทึก ", use_container_width=True):
     st.session_state.main_df.to_csv("03-2026.csv", index=False)
     st.sidebar.success("บันทึกสำเร็จ!")
 
