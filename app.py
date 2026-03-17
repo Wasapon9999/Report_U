@@ -22,6 +22,7 @@ from google.oauth2 import service_account
 # --- 1. การตั้งค่าหน้าเว็บและ Config ---
 st.set_page_config(page_title="USO1-Report Manager", layout="wide")
 
+# ✅ ID โฟลเดอร์ใน Shared Drive
 GOOGLE_DRIVE_FOLDER_ID = '1-4OwgP-ODbelbtwSg5-m-rm4cyOTcW7O'
 
 @st.cache_resource
@@ -51,16 +52,16 @@ def init_fonts():
 
 F_REG, F_BOLD = init_fonts()
 
-# --- 2. Optimized Google Drive Helpers ---
+# --- 2. Optimized Google Drive Helpers (ค้นหาตรงจุด ไม่โหลดไฟล์หมื่นไฟล์) ---
 
 @st.cache_data(ttl=600, show_spinner=False)
-def download_image_optimized(file_name):
-    """ค้นหาและดึงรูปโดยตรงจาก API (ไม่ต้องโหลดรายชื่อไฟล์ทั้งหมด)"""
+def download_image_direct(file_name):
+    """ใช้ API Search หาไฟล์ตามชื่อโดยตรง (ประหยัดเวลาโหลด)"""
     service = get_drive_service()
     if not service or not file_name or file_name in ["0", "nan", ""]: return None
     
     try:
-        # ค้นหาไฟล์ด้วยชื่อเป๊ะๆ (Exact Match) เพื่อความเร็วสูงสุด
+        # ค้นหาชื่อไฟล์เป๊ะๆ (Exact Match)
         query = f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and name = '{file_name}' and trashed = false"
         results = service.files().list(
             q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True
@@ -77,17 +78,17 @@ def download_image_optimized(file_name):
         while not done:
             _, done = downloader.next_chunk()
         fh.seek(0)
-        return fh.getvalue() # คืนค่าเป็น bytes เพื่อให้แคชได้ง่ายขึ้น
+        return fh.getvalue() # คืนค่า bytes เพื่อประหยัด Memory และทำ Cache ได้ดีกว่า
     except: return None
 
-def upload_and_overwrite_optimized(target_filename, content_bytes):
+def upload_and_overwrite(target_filename, content_bytes):
     service = get_drive_service()
     if not service: return
     try:
+        # ลบไฟล์เดิมชื่อเดียวกันทิ้งให้หมดก่อน
         query = f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and name = '{target_filename}' and trashed = false"
         results = service.files().list(q=query, fields="files(id)", 
                                        supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-        
         for f in results.get('files', []):
             try: service.files().delete(fileId=f['id'], supportsAllDrives=True).execute()
             except: pass
@@ -96,12 +97,13 @@ def upload_and_overwrite_optimized(target_filename, content_bytes):
         media = MediaIoBaseUpload(BytesIO(content_bytes), mimetype='image/jpeg', resumable=True)
         service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
         
-        # 💡 ล้างแคชเฉพาะรูปนี้เพื่อความเร็ว
-        download_image_optimized.clear(target_filename)
+        # ล้างแคชเฉพาะรูปที่อัปโหลดใหม่
+        download_image_direct.clear(target_filename)
     except Exception as e:
         st.error(f"❌ อัปโหลดล้มเหลว: {str(e)}")
 
-# --- 3. Utility (Same as original) ---
+# --- 3. Utility & Date Format (คงเดิมตามที่คุณต้องการ) ---
+
 def apply_exif_orientation(img):
     try:
         exif = img._getexif()
@@ -159,27 +161,22 @@ def generate_pdf_original_style(df, center_name):
     dt_first, date_str = parse_thai_date_simple(df.iloc[0]['date'])
     if pd.notna(dt_first):
         story.append(Paragraph(f"เดือน : {date_str.split(' ', 1)[1]}", thai_styles["Heading2"]))
-    
     valid_names = df["name"].loc[df["name"].str.strip() != ""]
     emp_name = valid_names.iloc[0] if not valid_names.empty else ""
     story.append(Paragraph(f"เจ้าหน้าที่ดูแลประจำศูนย์ : {emp_name}", thai_styles["Heading2"]))
     story.append(Spacer(1, 2))
-    
     table_data = [[Paragraph(h, thai_styles["HeaderStyle"]) for h in ["ลำดับ", "วันที่", "ชื่อ - นามสกุล", "เวลาเข้า", "เวลาออก", "ตำแหน่ง", "หมายเหตุ"]]]
     for i, row in df.iterrows():
         _, d_thai = parse_thai_date_simple(row['date'])
         table_data.append([Paragraph(str(i+1), thai_styles["CellStyle"]), Paragraph(d_thai, thai_styles["CellStyle"]), Paragraph(row['name'], thai_styles["CellStyle"]), Paragraph(fmt_time(row['time_in']), thai_styles["CellStyle"]), Paragraph(fmt_time(row['time_out']), thai_styles["CellStyle"]), Paragraph(row['status'], thai_styles["CellStyle"]), Paragraph("", thai_styles["CellStyle"])])
-    
     tbl = Table(table_data, colWidths=[35, 100, 130, 60, 60, 80, 70], repeatRows=1)
     tbl.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black), ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("TOPPADDING", (0, 0), (-1, -1), 3.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5)]))
     story.append(tbl)
     story.append(Spacer(1, 30))
-    
     sig_style = thai_styles["Signature"]
     sig_left = [Paragraph("....................................", sig_style), Spacer(1, 6), Paragraph(f"( {emp_name} )", sig_style), Paragraph("ผดล.ประจำศูนย์", sig_style)]
     sig_right = [Paragraph("....................................", sig_style), Spacer(1, 6), Paragraph("( ...................................... )", sig_style), Paragraph("ตำแหน่ง_______________________", sig_style)]
     story.append(KeepTogether(Table([[sig_left, sig_right]], colWidths=[260, 260])))
-    
     for _, r in df.iterrows():
         story.append(PageBreak())
         _, d_thai = parse_thai_date_simple(r['date'])
@@ -187,7 +184,7 @@ def generate_pdf_original_style(df, center_name):
         story.append(Spacer(1, 12))
         story.append(Paragraph(f"ชื่อ : <b>{r['name']}</b> &nbsp; ตำแหน่ง : <b>{r['status']}</b>", thai_styles["Normal"]))
         for label, col_img, col_time in [("เข้า (เช้า)", "img_in1", "time_in"), ("ออก (เย็น)", "img_out1", "time_out")]:
-            img_bytes = download_image_optimized(r[col_img])
+            img_bytes = download_image_direct(r[col_img])
             if img_bytes:
                 try:
                     with Image.open(BytesIO(img_bytes)) as PIL_img:
@@ -206,8 +203,7 @@ def generate_pdf_original_style(df, center_name):
     doc.build(story)
     return buffer.getvalue()
 
-# --- 4. Main UI ---
-st.title("🚀 ระบบจัดการรายงาน USO1 (High Speed)")
+# --- 4. Main UI (รูปแบบเดิมที่คุณต้องการ) ---
 
 if 'main_df' not in st.session_state:
     try:
@@ -218,63 +214,53 @@ if 'main_df' not in st.session_state:
 if 'uploader_version' not in st.session_state:
     st.session_state.uploader_version = 0
 
+st.sidebar.title("เมนู")
 centers = st.session_state.main_df['file_name'].unique()
 sel_center = st.sidebar.selectbox("เลือกศูนย์", centers)
 
-if st.sidebar.button("💾 บันทึกทั้งหมด", use_container_width=True):
+if st.sidebar.button("💾 บันทึก CSV", use_container_width=True):
     st.session_state.main_df.to_csv("03-2026.csv", index=False)
     st.sidebar.success("บันทึกสำเร็จ!")
 
-# ✅ ใช้ Form เพื่อลดการ Rerun บ่อยครั้งตอนพิมพ์ข้อความ
-with st.form("edit_form"):
-    df_filtered = st.session_state.main_df[st.session_state.main_df['file_name'] == sel_center]
-    
-    # ดึง index มาจัดเตรียมการแก้ไข
-    for idx in df_filtered.index:
-        row = st.session_state.main_df.loc[idx]
-        st.write(f"### 📅 {row['date']}")
+df_idx = st.session_state.main_df[st.session_state.main_df['file_name'] == sel_center].index
+
+# แสดงผล UI แบบเดิม (Expander)
+for idx in df_idx:
+    row = st.session_state.main_df.loc[idx]
+    with st.expander(f"📅 {row['date']} - {row['name']}"):
         c = st.columns([2, 2, 1, 1])
         st.session_state.main_df.at[idx, 'name'] = c[0].text_input("ชื่อ", row['name'], key=f"n_{idx}")
         st.session_state.main_df.at[idx, 'status'] = c[1].text_input("ตำแหน่ง", row['status'], key=f"s_{idx}")
         st.session_state.main_df.at[idx, 'time_in'] = c[2].text_input("เข้า", row['time_in'], key=f"i_{idx}")
         st.session_state.main_df.at[idx, 'time_out'] = c[3].text_input("ออก", row['time_out'], key=f"o_{idx}")
-        st.divider()
-    
-    submitted = st.form_submit_button("✅ ยืนยันการแก้ไขข้อความในส่วนนี้")
-    if submitted:
-        st.success("ข้อมูลถูกพักไว้ในระบบแล้ว (อย่าลืมกด 'บันทึกทั้งหมด' ที่แถบเมนูข้าง)")
 
-# ✅ ส่วนจัดการรูปภาพ แยกออกจาก Form เพื่อให้อัปโหลดได้ทันที
-st.markdown("---")
-st.subheader("🖼️ จัดการรูปภาพ")
-
-for idx in df_filtered.index:
-    row = st.session_state.main_df.loc[idx]
-    with st.expander(f"จัดการรูปภาพของวันที่ {row['date']}"):
         c_img = st.columns(2)
         for i, col in enumerate(["img_in1", "img_out1"]):
             target_filename = str(row[col])
-            img_bytes = download_image_optimized(target_filename)
-
+            img_bytes = download_image_direct(target_filename)
+            
             if img_bytes:
                 c_img[i].image(img_bytes, caption=f"Drive: {target_filename}", use_container_width=True)
             else:
                 c_img[i].warning(f"❌ ไม่พบรูป: {target_filename}")
-
-            up_key = f"u_{col}_{idx}_v{st.session_state.uploader_version}"
-            new_f = c_img[i].file_uploader(f"เปลี่ยนรูป {col}", type=['jpg', 'png', 'jpeg'], key=up_key)
-
-            if new_f:
-                if target_filename not in ["", "0", "nan"]:
-                    with st.spinner("กำลังอัปโหลด..."):
-                        upload_and_overwrite_optimized(target_filename, new_f.getbuffer())
-                        st.session_state.uploader_version += 1
-                        st.toast("อัปโหลดสำเร็จ!")
+            
+            # อัปโหลดทันทีและเปลี่ยนชื่อตาม CSV (แก้บั๊ก Loop ด้วย version)
+            upload_key = f"u_{col}_{idx}_v{st.session_state.uploader_version}"
+            new_f = c_img[i].file_uploader(f"เลือกรูป {col}", type=['jpg','png','jpeg'], key=upload_key)
+            
+            if new_f is not None:
+                if target_filename in ["", "0", "nan"]:
+                    st.error("⚠️ ชื่อไฟล์ใน CSV ว่างเปล่า")
+                else:
+                    with st.spinner(f"กำลังอัปโหลด..."):
+                        upload_and_overwrite(target_filename, new_f.getbuffer())
+                        st.session_state.uploader_version += 1 # ล้าง uploader
+                        st.toast(f"อัปโหลดสำเร็จ!")
                         time.sleep(0.5)
                         st.rerun()
 
 st.divider()
 if st.button("🖨️ ออกรายงาน PDF", use_container_width=True, type="primary"):
     with st.spinner("กำลังสร้าง PDF..."):
-        pdf = generate_pdf_original_style(st.session_state.main_df[st.session_state.main_df['file_name'] == sel_center], sel_center)
+        pdf = generate_pdf_original_style(st.session_state.main_df.loc[df_idx], sel_center)
         st.download_button("📥 ดาวน์โหลด PDF", pdf, f"{sel_center}.pdf", "application/pdf", use_container_width=True)
