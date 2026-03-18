@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 import time
-import gc
+import gc  # ระบบคืนค่าหน่วยความจำ
 from io import BytesIO
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import (
@@ -20,15 +20,14 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from google.oauth2 import service_account
 
-# --- 1. การตั้งค่าหน้าเว็บและสไตล์ ---
-st.set_page_config(page_title="USO1-Report | Chill TALK", layout="wide")
+# --- 1. Config & Styles ---
+st.set_page_config(page_title="USO1-Report Manager | Chill TALK", layout="wide")
 
-# CSS ปรับสี Progress Bar และความสวยงาม
+# CSS สำหรับตกแต่ง UI
 st.markdown("""
     <style>
-        .stProgress > div > div > div > div { background-color: #1d71b8; }
-        .stCheckbox { margin-top: 5px; }
-        .stExpander { border: 1px solid #f0f2f6; border-radius: 8px; }
+        .stExpander { border: 1px solid #e6e9ef; border-radius: 10px; margin-bottom: 10px; }
+        .main { background-color: #f9f9f9; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -48,7 +47,8 @@ def get_drive_service():
             )
         else: return None
         return build('drive', 'v3', credentials=creds)
-    except: return None
+    except Exception as e:
+        st.error(f"⚠️ Drive API Error: {e}"); return None
 
 def init_fonts():
     try:
@@ -59,10 +59,10 @@ def init_fonts():
 
 F_REG, F_BOLD = init_fonts()
 
-# --- 2. Google Drive Helpers (Optimized) ---
+# --- 2. Google Drive Helpers (Optimized for RAM) ---
 
-def download_image_for_pdf(file_name):
-    """ฟังก์ชันดึงรูปสำหรับ PDF (ใช้เสร็จแล้วคืน RAM ทันที)"""
+@st.cache_data(ttl=120, show_spinner=False) # ลดเวลาแคชเหลือ 2 นาทีเพื่อคืน RAM ไวขึ้น
+def download_image_optimized(file_name):
     service = get_drive_service()
     if not service or not file_name or file_name in ["0", "nan", ""]: return None
     try:
@@ -77,9 +77,14 @@ def download_image_for_pdf(file_name):
         done = False
         while not done:
             _, done = downloader.next_chunk()
-        data = fh.getvalue()
-        fh.close()
-        return data
+        
+        # บีบอัดรูปภาพทันทีที่โหลดเสร็จเพื่อประหยัด RAM
+        img_data = fh.getvalue()
+        with Image.open(BytesIO(img_data)) as img:
+            img.thumbnail((800, 800)) # ลดขนาดภาพใน RAM
+            out_io = BytesIO()
+            img.convert('RGB').save(out_io, format="JPEG", quality=75)
+            return out_io.getvalue()
     except: return None
 
 def upload_and_overwrite(target_filename, content_bytes):
@@ -94,10 +99,11 @@ def upload_and_overwrite(target_filename, content_bytes):
         file_metadata = {'name': target_filename, 'parents': [GOOGLE_DRIVE_FOLDER_ID]}
         media = MediaIoBaseUpload(BytesIO(content_bytes), mimetype='image/jpeg', resumable=True)
         service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
+        download_image_optimized.clear(target_filename)
     except Exception as e:
         st.error(f"❌ อัปโหลดล้มเหลว: {str(e)}")
 
-# --- 3. Utility & PDF Generator (ยึดรูปแบบเดิมเป๊ะ) ---
+# --- 3. Utility & PDF Generator ---
 
 def apply_exif_orientation(img):
     try:
@@ -143,13 +149,11 @@ def generate_pdf_original_style(df, center_name):
         "Normal": ParagraphStyle("ThaiNormal", fontName=F_REG, fontSize=14, leading=18, alignment=1),
         "Title": ParagraphStyle("ThaiTitle", fontName=F_BOLD, fontSize=18, leading=24, alignment=1),
         "Heading2": ParagraphStyle("ThaiHeading2", fontName=F_BOLD, fontSize=14, leading=20, alignment=1),
+        "Signature": ParagraphStyle("ThaiSignature", fontName=F_REG, fontSize=14, leading=18, alignment=1),
         "HeaderStyle": ParagraphStyle("H", fontName=F_BOLD, fontSize=10, leading=11, alignment=1),
         "CellStyle": ParagraphStyle("C", fontName=F_REG, fontSize=10, leading=11, alignment=1),
-        "Signature": ParagraphStyle("ThaiSignature", fontName=F_REG, fontSize=14, leading=18, alignment=1),
     }
     story = []
-    
-    # หน้าที่ 1: ตารางสรุปเวลาปฏิบัติงาน
     story.append(Paragraph("รายงานเวลาปฏิบัติงาน USO1-Renew", thai_styles["Title"]))
     story.append(Paragraph(f"ศูนย์ : {center_name}", thai_styles["Title"]))
     dt_first, date_str = parse_thai_date_simple(df.iloc[0]['date'])
@@ -158,137 +162,140 @@ def generate_pdf_original_style(df, center_name):
     emp_name = valid_names.iloc[0] if not valid_names.empty else ""
     story.append(Paragraph(f"เจ้าหน้าที่ดูแลประจำศูนย์ : {emp_name}", thai_styles["Heading2"]))
     story.append(Spacer(1, 2))
-    
     table_data = [[Paragraph(h, thai_styles["HeaderStyle"]) for h in ["ลำดับ", "วันที่", "ชื่อ - นามสกุล", "เวลาเข้า", "เวลาออก", "ตำแหน่ง", "หมายเหตุ"]]]
     for i, row in df.iterrows():
         _, d_thai = parse_thai_date_simple(row['date'])
-        table_data.append([
-            Paragraph(str(i+1), thai_styles["CellStyle"]),
-            Paragraph(d_thai, thai_styles["CellStyle"]),
-            Paragraph(row['name'], thai_styles["CellStyle"]),
-            Paragraph(fmt_time(row['time_in']), thai_styles["CellStyle"]),
-            Paragraph(fmt_time(row['time_out']), thai_styles["CellStyle"]),
-            Paragraph(row['status'], thai_styles["CellStyle"]),
-            Paragraph("", thai_styles["CellStyle"])
-        ])
-    
+        table_data.append([Paragraph(str(i+1), thai_styles["CellStyle"]), Paragraph(d_thai, thai_styles["CellStyle"]), Paragraph(row['name'], thai_styles["CellStyle"]), Paragraph(fmt_time(row['time_in']), thai_styles["CellStyle"]), Paragraph(fmt_time(row['time_out']), thai_styles["CellStyle"]), Paragraph(row['status'], thai_styles["CellStyle"]), Paragraph("", thai_styles["CellStyle"])])
     tbl = Table(table_data, colWidths=[35, 100, 130, 60, 60, 80, 70], repeatRows=1)
-    tbl.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER")
-    ]))
+    tbl.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black), ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (0, 0), (-1, -1), "CENTER")]))
     story.append(tbl)
     story.append(Spacer(1, 30))
-    
-    # ส่วนลายเซ็น
     sig_style = thai_styles["Signature"]
     sig_left = [Paragraph("....................................", sig_style), Spacer(1, 6), Paragraph(f"( {emp_name} )", sig_style), Paragraph("ผดล.ประจำศูนย์", sig_style)]
     sig_right = [Paragraph("....................................", sig_style), Spacer(1, 6), Paragraph("( ...................................... )", sig_style), Paragraph("ตำแหน่ง_______________________", sig_style)]
     story.append(KeepTogether(Table([[sig_left, sig_right]], colWidths=[260, 260])))
-
-    # หน้าต่อๆ ไป: แยกหน้าละคนพร้อมรูปเข้า-ออก
     for _, r in df.iterrows():
         story.append(PageBreak())
         _, d_thai = parse_thai_date_simple(r['date'])
         story.append(Paragraph(f"วันที่ : {d_thai}", thai_styles["Heading2"]))
         story.append(Spacer(1, 12))
         story.append(Paragraph(f"ชื่อ : <b>{r['name']}</b> &nbsp; ตำแหน่ง : <b>{r['status']}</b>", thai_styles["Normal"]))
-        
         for label, col_img, col_time in [("เข้า (เช้า)", "img_in1", "time_in"), ("ออก (เย็น)", "img_out1", "time_out")]:
-            img_bytes = download_image_for_pdf(r[col_img])
+            img_bytes = download_image_optimized(r[col_img]) # ใช้ตัวประหยัด RAM
             if img_bytes:
                 try:
                     with Image.open(BytesIO(img_bytes)) as PIL_img:
                         PIL_img = apply_exif_orientation(PIL_img)
                         temp_io = BytesIO()
-                        PIL_img.convert('RGB').save(temp_io, format="JPEG", quality=85)
+                        PIL_img.convert('RGB').save(temp_io, format="JPEG", quality=80)
                         temp_io.seek(0)
                         im = RLImage(temp_io)
                         im._restrictSize(310, 260)
                         img_tbl = Table([[im]], colWidths=[450])
                         img_tbl.setStyle(TableStyle([('ALIGN', (0, 0), (-1, -1), 'CENTER')]))
                         story.append(img_tbl)
-                        temp_io.close()
                 except: pass
             story.append(Paragraph(f"เวลา{label} : <b>{fmt_time(r[col_time])}</b>", thai_styles["Normal"]))
             story.append(Spacer(1, 18))
-            gc.collect() # คืน RAM หลังจบแต่ละรูป
-            
     doc.build(story)
     return buffer.getvalue()
 
 # --- 4. Main UI Components ---
 
 if 'main_df' not in st.session_state:
-    try: st.session_state.main_df = pd.read_csv("03-2026.csv").fillna("")
-    except: st.error("❌ ไม่พบไฟล์ CSV"); st.stop()
+    try: 
+        st.session_state.main_df = pd.read_csv("03-2026.csv").fillna("")
+    except: 
+        st.error("❌ ไม่พบไฟล์ CSV"); st.stop()
+
+if 'img_refresh_keys' not in st.session_state:
+    st.session_state.img_refresh_keys = {}
 
 @st.fragment
 def image_editor_fragment(idx, col, target_filename):
-    # Lazy Load: โหลดรูปเฉพาะเมื่อ User ติ๊กดูเท่านั้น เพื่อประหยัด RAM สำหรับ 5 คน
-    show_img = st.checkbox(f"📸 ดูรูป {col}", key=f"show_{idx}_{col}")
-    if show_img:
-        with st.spinner("⏳"):
-            img_bytes = download_image_for_pdf(target_filename)
-        if img_bytes:
-            st.image(img_bytes, use_container_width=True)
-            del img_bytes
-            gc.collect()
-        else:
-            st.caption("🌑 ไม่พบรูปภาพ")
-            
-    new_f = st.file_uploader("เปลี่ยนรูป", type=['jpg','jpeg'], key=f"up_{idx}_{col}")
+    refresh_key = st.session_state.img_refresh_keys.get(f"{idx}_{col}", 0)
+    
+    # ดึงรูปเฉพาะเมื่อ Fragment นี้ทำงาน (Lazy Load)
+    with st.spinner("⏳"):
+        img_bytes = download_image_optimized(target_filename)
+    
+    if img_bytes:
+        st.image(img_bytes, caption=f"Drive: {target_filename}", use_container_width=True)
+    else:
+        st.caption(f"🌑 ไม่พบรูป: {target_filename}")
+    
+    new_f = st.file_uploader(f"เปลี่ยนรูป {col}", type=['jpg','png','jpeg'], key=f"fu_{idx}_{col}_{refresh_key}")
     if new_f:
-        with st.spinner("อัปโหลด..."):
+        with st.spinner("กำลังอัปโหลด..."):
             upload_and_overwrite(target_filename, new_f.getbuffer())
-            st.toast("สำเร็จ!")
-            time.sleep(0.5); st.rerun()
+            st.session_state.img_refresh_keys[f"{idx}_{col}"] = refresh_key + 1
+            st.toast("อัปโหลดสำเร็จ!")
+            time.sleep(0.5)
+            st.rerun()
 
 def render_main_ui(center):
-    st.title(f"🚀 ศูนย์: {center}")
-    df_idx = st.session_state.main_df[st.session_state.main_df['file_name'] == center].index
-    for idx in df_idx:
-        row = st.session_state.main_df.loc[idx]
-        with st.expander(f"📅 {row['date']} - {row['name']}", expanded=True):
-            c = st.columns([2, 2, 1, 1])
-            st.session_state.main_df.at[idx, 'name'] = c[0].text_input("ชื่อ", row['name'], key=f"n_{idx}")
-            st.session_state.main_df.at[idx, 'status'] = c[1].text_input("ตำแหน่ง", row['status'], key=f"s_{idx}")
-            st.session_state.main_df.at[idx, 'time_in'] = c[2].text_input("เข้า", row['time_in'], key=f"i_{idx}")
-            st.session_state.main_df.at[idx, 'time_out'] = c[3].text_input("ออก", row['time_out'], key=f"o_{idx}")
-            c_img = st.columns(2)
-            with c_img[0]: image_editor_fragment(idx, "เข้า", str(row["img_in1"]))
-            with c_img[1]: image_editor_fragment(idx, "ออก", str(row["img_out1"]))
+    with main_container.container():
+        st.title(f"🚀 ศูนย์: {center}")
+        df_idx = st.session_state.main_df[st.session_state.main_df['file_name'] == center].index
+        
+        for idx in df_idx:
+            row = st.session_state.main_df.loc[idx]
+            with st.expander(f"📅 {row['date']} - {row['name']}", expanded=True):
+                c = st.columns([2, 2, 1, 1])
+                st.session_state.main_df.at[idx, 'name'] = c[0].text_input("ชื่อ", row['name'], key=f"n_{idx}")
+                st.session_state.main_df.at[idx, 'status'] = c[1].text_input("ตำแหน่ง", row['status'], key=f"s_{idx}")
+                st.session_state.main_df.at[idx, 'time_in'] = c[2].text_input("เข้า", row['time_in'], key=f"i_{idx}")
+                st.session_state.main_df.at[idx, 'time_out'] = c[3].text_input("ออก", row['time_out'], key=f"o_{idx}")
+                
+                c_img = st.columns(2)
+                with c_img[0]: image_editor_fragment(idx, "img_in1", str(row["img_in1"]))
+                with c_img[1]: image_editor_fragment(idx, "img_out1", str(row["img_out1"]))
 
-# --- 5. App Logic ---
+        st.divider()
+        if st.button("🖨️ ออกรายงาน PDF", use_container_width=True, type="primary"):
+            with st.spinner("กำลังสร้าง PDF..."):
+                pdf = generate_pdf_original_style(st.session_state.main_df.loc[df_idx], center)
+                st.download_button("📥 ดาวน์โหลด PDF", pdf, f"{center}.pdf", "application/pdf", use_container_width=True)
 
-st.sidebar.title("Chill TALK Menu")
+# --- 5. Navigation & Logic Control ---
+
+st.sidebar.title("เมนู")
+
 unique_centers = st.session_state.main_df['file_name'].unique()
 def natural_sort_key(s):
     try: return int(str(s).split('-')[0].strip())
     except: return s
 centers_sorted = sorted(unique_centers, key=natural_sort_key)
-sel_center = st.sidebar.selectbox("เลือกศูนย์", ["--- กรุณาเลือกศูนย์ ---"] + centers_sorted)
+menu_options = ["--- กรุณาเลือกศูนย์ที่ต้องการตรวจ ---"] + centers_sorted
 
-if sel_center == "--- กรุณาเลือกศูนย์ ---":
-    st.write("")
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col2:
-        try: st.image("logo.png", width=125)
-        except: st.title("Chill TALK")
-    st.markdown("<h1 style='text-align: center;'>ระบบจัดการรายงาน USO1</h1>", unsafe_allow_html=True)
-    st.info("💡 กรุณาเลือกศูนย์ทางซ้ายเพื่อเริ่มงานครับ")
+sel_center = st.sidebar.selectbox("เลือกศูนย์", menu_options)
+main_container = st.empty()
+
+if sel_center == "--- กรุณาเลือกศูนย์ที่ต้องการตรวจ ---":
+    with main_container.container():
+        st.write("")
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            try: st.image("logo.png", width=125)
+            except: st.markdown("<h1 style='text-align: center;'>Chill TALK</h1>", unsafe_allow_html=True)
+        
+        st.markdown("<h1 style='text-align: center;'>ระบบจัดการรายงาน USO1</h1>", unsafe_allow_html=True)
+        st.divider()
+        st.info("""
+        **📋 ขั้นตอนการทำงาน:**
+        1. **เลือกศูนย์** ทางด้านซ้ายมือ
+        2. **ตรวจสอบงาน** เลื่อนลงดูได้ทันที (รูปภาพจะทยอยโหลดขึ้นมา)
+        3. **บันทึกข้อมูล** แก้ไขเสร็จอย่าลืมกดปุ่ม '💾 บันทึก'
+        """)
+
 else:
-    gc.collect()
+    # เคลียร์ Memory ทุกครั้งที่มีการเปลี่ยนศูนย์
+    if "current_center" not in st.session_state or st.session_state.current_center != sel_center:
+        st.session_state.current_center = sel_center
+        gc.collect() # บังคับคืน RAM ทันที
+    
     render_main_ui(sel_center)
 
-    st.divider()
-    if st.button("🖨️ ออกรายงาน PDF (แบบเดิม)", use_container_width=True, type="primary"):
-        with st.spinner("กำลังสร้าง PDF..."):
-            pdf_data = generate_pdf_original_style(st.session_state.main_df[st.session_state.main_df['file_name'] == sel_center], sel_center)
-            st.download_button("📥 ดาวน์โหลด PDF", pdf_data, f"{sel_center}.pdf", "application/pdf", use_container_width=True)
-
-if st.sidebar.button("💾 บันทึก CSV", use_container_width=True):
+if st.sidebar.button("💾 บันทึก ", use_container_width=True):
     st.session_state.main_df.to_csv("03-2026.csv", index=False)
     st.sidebar.success("บันทึกสำเร็จ!")
