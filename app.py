@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 import time
+import gc  # ระบบคืนค่าหน่วยความจำ
 from io import BytesIO
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import (
@@ -19,15 +20,14 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from google.oauth2 import service_account
 
-# --- 1. การตั้งค่าหน้าเว็บและสไตล์ (Theme Chill TALK) ---
+# --- 1. Config & Styles ---
 st.set_page_config(page_title="USO1-Report Manager | Chill TALK", layout="wide")
 
-# ปรับสี Progress Bar ให้เป็นสีน้ำเงินตามโลโก้
+# CSS สำหรับตกแต่ง UI
 st.markdown("""
     <style>
-        .stProgress > div > div > div > div {
-            background-color: #1d71b8;
-        }
+        .stExpander { border: 1px solid #e6e9ef; border-radius: 10px; margin-bottom: 10px; }
+        .main { background-color: #f9f9f9; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -48,7 +48,7 @@ def get_drive_service():
         else: return None
         return build('drive', 'v3', credentials=creds)
     except Exception as e:
-        st.error(f"⚠️ Drive Connection Error: {e}"); return None
+        st.error(f"⚠️ Drive API Error: {e}"); return None
 
 def init_fonts():
     try:
@@ -59,10 +59,10 @@ def init_fonts():
 
 F_REG, F_BOLD = init_fonts()
 
-# --- 2. Google Drive Helpers ---
+# --- 2. Google Drive Helpers (Optimized for RAM) ---
 
-@st.cache_data(ttl=600, show_spinner=False)
-def download_image_direct(file_name):
+@st.cache_data(ttl=120, show_spinner=False) # ลดเวลาแคชเหลือ 2 นาทีเพื่อคืน RAM ไวขึ้น
+def download_image_optimized(file_name):
     service = get_drive_service()
     if not service or not file_name or file_name in ["0", "nan", ""]: return None
     try:
@@ -70,15 +70,21 @@ def download_image_direct(file_name):
         results = service.files().list(q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
         items = results.get('files', [])
         if not items: return None
-        file_id = items[0]['id']
-        request = service.files().get_media(fileId=file_id)
+        
+        request = service.files().get_media(fileId=items[0]['id'])
         fh = BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
         done = False
         while not done:
             _, done = downloader.next_chunk()
-        fh.seek(0)
-        return fh.getvalue()
+        
+        # บีบอัดรูปภาพทันทีที่โหลดเสร็จเพื่อประหยัด RAM
+        img_data = fh.getvalue()
+        with Image.open(BytesIO(img_data)) as img:
+            img.thumbnail((800, 800)) # ลดขนาดภาพใน RAM
+            out_io = BytesIO()
+            img.convert('RGB').save(out_io, format="JPEG", quality=75)
+            return out_io.getvalue()
     except: return None
 
 def upload_and_overwrite(target_filename, content_bytes):
@@ -93,7 +99,7 @@ def upload_and_overwrite(target_filename, content_bytes):
         file_metadata = {'name': target_filename, 'parents': [GOOGLE_DRIVE_FOLDER_ID]}
         media = MediaIoBaseUpload(BytesIO(content_bytes), mimetype='image/jpeg', resumable=True)
         service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
-        download_image_direct.clear(target_filename)
+        download_image_optimized.clear(target_filename)
     except Exception as e:
         st.error(f"❌ อัปโหลดล้มเหลว: {str(e)}")
 
@@ -175,13 +181,13 @@ def generate_pdf_original_style(df, center_name):
         story.append(Spacer(1, 12))
         story.append(Paragraph(f"ชื่อ : <b>{r['name']}</b> &nbsp; ตำแหน่ง : <b>{r['status']}</b>", thai_styles["Normal"]))
         for label, col_img, col_time in [("เข้า (เช้า)", "img_in1", "time_in"), ("ออก (เย็น)", "img_out1", "time_out")]:
-            img_bytes = download_image_direct(r[col_img])
+            img_bytes = download_image_optimized(r[col_img]) # ใช้ตัวประหยัด RAM
             if img_bytes:
                 try:
                     with Image.open(BytesIO(img_bytes)) as PIL_img:
                         PIL_img = apply_exif_orientation(PIL_img)
                         temp_io = BytesIO()
-                        PIL_img.convert('RGB').save(temp_io, format="JPEG", quality=85)
+                        PIL_img.convert('RGB').save(temp_io, format="JPEG", quality=80)
                         temp_io.seek(0)
                         im = RLImage(temp_io)
                         im._restrictSize(310, 260)
@@ -197,8 +203,10 @@ def generate_pdf_original_style(df, center_name):
 # --- 4. Main UI Components ---
 
 if 'main_df' not in st.session_state:
-    try: st.session_state.main_df = pd.read_csv("03-2026.csv").fillna("")
-    except: st.error("❌ ไม่พบไฟล์ CSV"); st.stop()
+    try: 
+        st.session_state.main_df = pd.read_csv("03-2026.csv").fillna("")
+    except: 
+        st.error("❌ ไม่พบไฟล์ CSV"); st.stop()
 
 if 'img_refresh_keys' not in st.session_state:
     st.session_state.img_refresh_keys = {}
@@ -206,11 +214,15 @@ if 'img_refresh_keys' not in st.session_state:
 @st.fragment
 def image_editor_fragment(idx, col, target_filename):
     refresh_key = st.session_state.img_refresh_keys.get(f"{idx}_{col}", 0)
-    img_bytes = download_image_direct(target_filename)
+    
+    # ดึงรูปเฉพาะเมื่อ Fragment นี้ทำงาน (Lazy Load)
+    with st.spinner("⏳"):
+        img_bytes = download_image_optimized(target_filename)
+    
     if img_bytes:
         st.image(img_bytes, caption=f"Drive: {target_filename}", use_container_width=True)
     else:
-        st.warning(f"❌ ไม่พบรูป: {target_filename}")
+        st.caption(f"🌑 ไม่พบรูป: {target_filename}")
     
     new_f = st.file_uploader(f"เปลี่ยนรูป {col}", type=['jpg','png','jpeg'], key=f"fu_{idx}_{col}_{refresh_key}")
     if new_f:
@@ -225,17 +237,16 @@ def render_main_ui(center):
     with main_container.container():
         st.title(f"🚀 ศูนย์: {center}")
         df_idx = st.session_state.main_df[st.session_state.main_df['file_name'] == center].index
-        # st.info("💡 ข้อมูลถูกกางออกเรียบร้อยแล้ว ตรวจสอบได้ทันที")
         
         for idx in df_idx:
             row = st.session_state.main_df.loc[idx]
-            # กาง Expander อัตโนมัติ (expanded=True)
             with st.expander(f"📅 {row['date']} - {row['name']}", expanded=True):
                 c = st.columns([2, 2, 1, 1])
                 st.session_state.main_df.at[idx, 'name'] = c[0].text_input("ชื่อ", row['name'], key=f"n_{idx}")
                 st.session_state.main_df.at[idx, 'status'] = c[1].text_input("ตำแหน่ง", row['status'], key=f"s_{idx}")
                 st.session_state.main_df.at[idx, 'time_in'] = c[2].text_input("เข้า", row['time_in'], key=f"i_{idx}")
                 st.session_state.main_df.at[idx, 'time_out'] = c[3].text_input("ออก", row['time_out'], key=f"o_{idx}")
+                
                 c_img = st.columns(2)
                 with c_img[0]: image_editor_fragment(idx, "img_in1", str(row["img_in1"]))
                 with c_img[1]: image_editor_fragment(idx, "img_out1", str(row["img_out1"]))
@@ -250,7 +261,6 @@ def render_main_ui(center):
 
 st.sidebar.title("เมนู")
 
-# Natural Sorting Logic (1, 2, 3...)
 unique_centers = st.session_state.main_df['file_name'].unique()
 def natural_sort_key(s):
     try: return int(str(s).split('-')[0].strip())
@@ -264,45 +274,25 @@ main_container = st.empty()
 if sel_center == "--- กรุณาเลือกศูนย์ที่ต้องการตรวจ ---":
     with main_container.container():
         st.write("")
-        col1, col2, col3 = st.columns([1, 1.2, 1])
+        col1, col2, col3 = st.columns([1, 1, 1])
         with col2:
-            try: st.image("logo.png", width=280)
-            except: st.markdown("")
+            try: st.image("logo.png", width=125)
+            except: st.markdown("<h1 style='text-align: center;'>Chill TALK</h1>", unsafe_allow_html=True)
         
         st.markdown("<h1 style='text-align: center;'>ระบบจัดการรายงาน USO1</h1>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align: center; color: #1d71b8;'><b></b></p>", unsafe_allow_html=True)
         st.divider()
-        
-      
         st.info("""
         **📋 ขั้นตอนการทำงาน:**
-        1. **เลือกศูนย์** จากเมนูทางซ้าย 
-        2. **รอหลอดโหลดสีน้ำเงิน** จนครบ 100% เพื่อดึงรูปภาพจาก Cloud Google drive ที่ทุกคนเคยส่งมาให้ครับ
-        3. **ตรวจสอบงาน** ข้อมูลทุกวันจะแสดงออกให้อัตโนมัติ เลื่อนลงเพื่อดูได้ทันทีค้าบบ
-        4. **บันทึกข้อมูล** เมื่อต้องการแก้ไข ชื่อ-นามสกุล ตำแหน่ง เวลลาเข้า และ ออกครับ เสร็จแล้วอย่าลืมกดปุ่ม '💾 บันทึก '
+        1. **เลือกศูนย์** ทางด้านซ้ายมือ
+        2. **ตรวจสอบงาน** เลื่อนลงดูได้ทันที (รูปภาพจะทยอยโหลดขึ้นมา)
+        3. **บันทึกข้อมูล** แก้ไขเสร็จอย่าลืมกดปุ่ม '💾 บันทึก'
         """)
-        st.warning("⚠️ **ข้อควรระวัง:** หากตรวจพร้อมกันหลายคน โปรดแบ่งโซนศูนย์ให้ชัดเจนเพื่อป้องกันข้อมูลทับซ้อน")
 
 else:
-    # Logic หลอดโหลดพลังสีน้ำเงิน
+    # เคลียร์ Memory ทุกครั้งที่มีการเปลี่ยนศูนย์
     if "current_center" not in st.session_state or st.session_state.current_center != sel_center:
         st.session_state.current_center = sel_center
-        progress_container = st.empty()
-        with progress_container.container():
-            st.markdown(f"### ⚙️ กำลังดึงข้อมูล: {sel_center}")
-            prog_bar = st.progress(0)
-            status_text = st.empty()
-            target_df = st.session_state.main_df[st.session_state.main_df['file_name'] == sel_center]
-            total_rows = len(target_df)
-            for i, (idx, r) in enumerate(target_df.iterrows()):
-                percent_complete = int(((i + 1) / total_rows) * 100)
-                status_text.text(f"กำลังดึงรูปภาพวันที่ {r['date']}... ({percent_complete}%)")
-                download_image_direct(str(r['img_in1']))
-                download_image_direct(str(r['img_out1']))
-                prog_bar.progress(percent_complete)
-            status_text.text("🚀 ระบบพร้อมตรวจสอบ!")
-            time.sleep(0.4)
-        progress_container.empty()
+        gc.collect() # บังคับคืน RAM ทันที
     
     render_main_ui(sel_center)
 
