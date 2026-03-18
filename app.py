@@ -1,200 +1,301 @@
 import streamlit as st
 import pandas as pd
-import os, gc, threading, time
+import os
+import time
+import gc  # ระบบคืนค่าหน่วยความจำ
 from io import BytesIO
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import (
+    SimpleDocTemplate, Table, TableStyle,
+    Image as RLImage, Paragraph, Spacer, PageBreak, KeepTogether
+)
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from PIL import Image, ExifTags
 
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-from reportlab.lib import colors
-from reportlab.lib.styles import ParagraphStyle
-
+# Google Drive API
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from google.oauth2 import service_account
 
-# ================= CONFIG =================
-st.set_page_config(page_title="USO Report", layout="wide")
+# --- 1. Config & Styles ---
+st.set_page_config(page_title="USO1-Report Manager | Chill TALK", layout="wide")
 
-GOOGLE_DRIVE_FOLDER_ID = 'YOUR_FOLDER_ID'
-pdf_lock = threading.Lock()
+# CSS สำหรับตกแต่ง UI
+st.markdown("""
+    <style>
+        .stExpander { border: 1px solid #e6e9ef; border-radius: 10px; margin-bottom: 10px; }
+        .main { background-color: #f9f9f9; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# ================= GOOGLE DRIVE =================
+GOOGLE_DRIVE_FOLDER_ID = '1-4OwgP-ODbelbtwSg5-m-rm4cyOTcW7O'
+
 @st.cache_resource
-def get_drive():
+def get_drive_service():
     try:
         if "gcp_service_account" in st.secrets:
+            info = st.secrets["gcp_service_account"]
             creds = service_account.Credentials.from_service_account_info(
-                st.secrets["gcp_service_account"],
-                scopes=['https://www.googleapis.com/auth/drive']
+                info, scopes=['https://www.googleapis.com/auth/drive']
             )
-        else:
+        elif os.path.exists("service_account.json"):
             creds = service_account.Credentials.from_service_account_file(
-                "service_account.json",
-                scopes=['https://www.googleapis.com/auth/drive']
+                'service_account.json', scopes=['https://www.googleapis.com/auth/drive']
             )
+        else: return None
         return build('drive', 'v3', credentials=creds)
-    except:
-        return None
+    except Exception as e:
+        st.error(f"⚠️ Drive API Error: {e}"); return None
 
-# ================= DATA =================
-@st.cache_data(ttl=300)
-def load_data():
-    return pd.read_csv("03-2026.csv").fillna("")
-
-def get_center_df(center):
-    df = load_data()
-    return df[df['file_name'] == center].copy()
-
-# ================= IMAGE =================
-@st.cache_data(ttl=180, max_entries=30)
-def load_image(file_name):
-    service = get_drive()
-    if not service or not file_name:
-        return None
+def init_fonts():
     try:
-        q = f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and name='{file_name}'"
-        res = service.files().list(q=q, fields="files(id)").execute()
-        if not res['files']:
-            return None
+        pdfmetrics.registerFont(TTFont('THSarabun', 'THSarabunNew.ttf'))
+        pdfmetrics.registerFont(TTFont('THSarabun-Bold', 'THSarabunNew Bold.ttf'))
+        return 'THSarabun', 'THSarabun-Bold'
+    except: return 'Helvetica', 'Helvetica-Bold'
 
-        file_id = res['files'][0]['id']
-        req = service.files().get_media(fileId=file_id)
+F_REG, F_BOLD = init_fonts()
 
+# --- 2. Google Drive Helpers (Optimized for RAM) ---
+
+@st.cache_data(ttl=120, show_spinner=False) # ลดเวลาแคชเหลือ 2 นาทีเพื่อคืน RAM ไวขึ้น
+def download_image_optimized(file_name):
+    service = get_drive_service()
+    if not service or not file_name or file_name in ["0", "nan", ""]: return None
+    try:
+        query = f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and name = '{file_name}' and trashed = false"
+        results = service.files().list(q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+        items = results.get('files', [])
+        if not items: return None
+        
+        request = service.files().get_media(fileId=items[0]['id'])
         fh = BytesIO()
-        downloader = MediaIoBaseDownload(fh, req)
-
+        downloader = MediaIoBaseDownload(fh, request)
         done = False
         while not done:
             _, done = downloader.next_chunk()
+        
+        # บีบอัดรูปภาพทันทีที่โหลดเสร็จเพื่อประหยัด RAM
+        img_data = fh.getvalue()
+        with Image.open(BytesIO(img_data)) as img:
+            img.thumbnail((800, 800)) # ลดขนาดภาพใน RAM
+            out_io = BytesIO()
+            img.convert('RGB').save(out_io, format="JPEG", quality=75)
+            return out_io.getvalue()
+    except: return None
 
-        img = Image.open(BytesIO(fh.getvalue()))
-        img.thumbnail((350, 350))
+def upload_and_overwrite(target_filename, content_bytes):
+    service = get_drive_service()
+    if not service: return
+    try:
+        query = f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and name = '{target_filename}' and trashed = false"
+        results = service.files().list(q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+        for f in results.get('files', []):
+            try: service.files().delete(fileId=f['id'], supportsAllDrives=True).execute()
+            except: pass
+        file_metadata = {'name': target_filename, 'parents': [GOOGLE_DRIVE_FOLDER_ID]}
+        media = MediaIoBaseUpload(BytesIO(content_bytes), mimetype='image/jpeg', resumable=True)
+        service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
+        download_image_optimized.clear(target_filename)
+    except Exception as e:
+        st.error(f"❌ อัปโหลดล้มเหลว: {str(e)}")
 
-        out = BytesIO()
-        img.convert("RGB").save(out, format="JPEG", quality=55)
+# --- 3. Utility & PDF Generator ---
 
-        return out.getvalue()
+def apply_exif_orientation(img):
+    try:
+        exif = img._getexif()
+        if exif:
+            for tag, value in exif.items():
+                if ExifTags.TAGS.get(tag) == 'Orientation':
+                    if value == 3: img = img.transpose(Image.ROTATE_180)
+                    elif value == 6: img = img.transpose(Image.ROTATE_270)
+                    elif value == 8: img = img.transpose(Image.ROTATE_90)
+                    break
+    except: pass
+    return img
 
-    except:
-        return None
+def fmt_time(t):
+    if not t or pd.isna(t) or str(t).strip() == "": return ""
+    t = str(t).strip().replace(".", ":")
+    try:
+        parts = t.split(":")
+        return f"{int(parts[0]):02d}:{int(parts[1]):02d}"
+    except: return t
 
-def upload_image(name, file):
-    service = get_drive()
-    if not service:
-        return
+def parse_thai_date_simple(s):
+    month_thai_name = {1: "มกราคม", 2: "กุมภาพันธ์", 3: "มีนาคม", 4: "เมษายน", 5: "พฤษภาคม", 6: "มิถุนายน",
+                       7: "กรกฎาคม", 8: "สิงหาคม", 9: "กันยายน", 10: "ตุลาคม", 11: "พฤศจิกายน", 12: "ธันวาคม"}
+    if not s or pd.isna(s): return pd.NaT, ""
+    try:
+        parts = str(s).strip().split()
+        if len(parts) == 3:
+            day, month_name, year = parts
+            m_map = {"มกราคม":1,"กุมภาพันธ์":2,"มีนาคม":3,"เมษายน":4,"พฤษภาคม":5,"มิถุนายน":6,"กรกฎาคม":7,"สิงหาคม":8,"กันยายน":9,"ตุลาคม":10,"พฤศจิกายน":11,"ธันวาคม":12}
+            m_int = m_map.get(month_name, 1)
+            y_int = int(year); y_int = y_int - 543 if y_int > 2500 else y_int
+            dt = pd.to_datetime(f"{y_int}-{m_int:02d}-{int(day):02d}")
+            return dt, f"{day} {month_thai_name[m_int]} {int(year)}"
+    except: pass
+    return pd.NaT, str(s)
 
-    media = MediaIoBaseUpload(BytesIO(file), mimetype='image/jpeg')
-    service.files().create(
-        body={"name": name, "parents": [GOOGLE_DRIVE_FOLDER_ID]},
-        media_body=media
-    ).execute()
-
-# ================= PDF =================
-def generate_pdf(df, center):
+def generate_pdf_original_style(df, center_name):
     buffer = BytesIO()
-
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
-
-    styles = {
-        "title": ParagraphStyle("t", fontSize=16, alignment=1),
-        "body": ParagraphStyle("b", fontSize=10)
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=20, leftMargin=20, topMargin=25, bottomMargin=15)
+    thai_styles = {
+        "Normal": ParagraphStyle("ThaiNormal", fontName=F_REG, fontSize=14, leading=18, alignment=1),
+        "Title": ParagraphStyle("ThaiTitle", fontName=F_BOLD, fontSize=18, leading=24, alignment=1),
+        "Heading2": ParagraphStyle("ThaiHeading2", fontName=F_BOLD, fontSize=14, leading=20, alignment=1),
+        "Signature": ParagraphStyle("ThaiSignature", fontName=F_REG, fontSize=14, leading=18, alignment=1),
+        "HeaderStyle": ParagraphStyle("H", fontName=F_BOLD, fontSize=10, leading=11, alignment=1),
+        "CellStyle": ParagraphStyle("C", fontName=F_REG, fontSize=10, leading=11, alignment=1),
     }
-
     story = []
-
-    story.append(Paragraph(f"ศูนย์: {center}", styles["title"]))
-    story.append(Spacer(1, 10))
-
-    table_data = [["วันที่","ชื่อ","เข้า","ออก"]]
-
+    story.append(Paragraph("รายงานเวลาปฏิบัติงาน USO1-Renew", thai_styles["Title"]))
+    story.append(Paragraph(f"ศูนย์ : {center_name}", thai_styles["Title"]))
+    dt_first, date_str = parse_thai_date_simple(df.iloc[0]['date'])
+    if pd.notna(dt_first): story.append(Paragraph(f"เดือน : {date_str.split(' ', 1)[1]}", thai_styles["Heading2"]))
+    valid_names = df["name"].loc[df["name"].str.strip() != ""]
+    emp_name = valid_names.iloc[0] if not valid_names.empty else ""
+    story.append(Paragraph(f"เจ้าหน้าที่ดูแลประจำศูนย์ : {emp_name}", thai_styles["Heading2"]))
+    story.append(Spacer(1, 2))
+    table_data = [[Paragraph(h, thai_styles["HeaderStyle"]) for h in ["ลำดับ", "วันที่", "ชื่อ - นามสกุล", "เวลาเข้า", "เวลาออก", "ตำแหน่ง", "หมายเหตุ"]]]
+    for i, row in df.iterrows():
+        _, d_thai = parse_thai_date_simple(row['date'])
+        table_data.append([Paragraph(str(i+1), thai_styles["CellStyle"]), Paragraph(d_thai, thai_styles["CellStyle"]), Paragraph(row['name'], thai_styles["CellStyle"]), Paragraph(fmt_time(row['time_in']), thai_styles["CellStyle"]), Paragraph(fmt_time(row['time_out']), thai_styles["CellStyle"]), Paragraph(row['status'], thai_styles["CellStyle"]), Paragraph("", thai_styles["CellStyle"])])
+    tbl = Table(table_data, colWidths=[35, 100, 130, 60, 60, 80, 70], repeatRows=1)
+    tbl.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black), ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (0, 0), (-1, -1), "CENTER")]))
+    story.append(tbl)
+    story.append(Spacer(1, 30))
+    sig_style = thai_styles["Signature"]
+    sig_left = [Paragraph("....................................", sig_style), Spacer(1, 6), Paragraph(f"( {emp_name} )", sig_style), Paragraph("ผดล.ประจำศูนย์", sig_style)]
+    sig_right = [Paragraph("....................................", sig_style), Spacer(1, 6), Paragraph("( ...................................... )", sig_style), Paragraph("ตำแหน่ง_______________________", sig_style)]
+    story.append(KeepTogether(Table([[sig_left, sig_right]], colWidths=[260, 260])))
     for _, r in df.iterrows():
-        table_data.append([
-            r["date"], r["name"], r["time_in"], r["time_out"]
-        ])
-
-    table = Table(table_data)
-    table.setStyle(TableStyle([
-        ("GRID",(0,0),(-1,-1),0.5,colors.black)
-    ]))
-
-    story.append(table)
-
+        story.append(PageBreak())
+        _, d_thai = parse_thai_date_simple(r['date'])
+        story.append(Paragraph(f"วันที่ : {d_thai}", thai_styles["Heading2"]))
+        story.append(Spacer(1, 12))
+        story.append(Paragraph(f"ชื่อ : <b>{r['name']}</b> &nbsp; ตำแหน่ง : <b>{r['status']}</b>", thai_styles["Normal"]))
+        for label, col_img, col_time in [("เข้า (เช้า)", "img_in1", "time_in"), ("ออก (เย็น)", "img_out1", "time_out")]:
+            img_bytes = download_image_optimized(r[col_img]) # ใช้ตัวประหยัด RAM
+            if img_bytes:
+                try:
+                    with Image.open(BytesIO(img_bytes)) as PIL_img:
+                        PIL_img = apply_exif_orientation(PIL_img)
+                        temp_io = BytesIO()
+                        PIL_img.convert('RGB').save(temp_io, format="JPEG", quality=80)
+                        temp_io.seek(0)
+                        im = RLImage(temp_io)
+                        im._restrictSize(310, 260)
+                        img_tbl = Table([[im]], colWidths=[450])
+                        img_tbl.setStyle(TableStyle([('ALIGN', (0, 0), (-1, -1), 'CENTER')]))
+                        story.append(img_tbl)
+                except: pass
+            story.append(Paragraph(f"เวลา{label} : <b>{fmt_time(r[col_time])}</b>", thai_styles["Normal"]))
+            story.append(Spacer(1, 18))
     doc.build(story)
-
-    del story
-    gc.collect()
-
     return buffer.getvalue()
 
-def safe_pdf(df, center):
-    with pdf_lock:
-        return generate_pdf(df, center)
+# --- 4. Main UI Components ---
 
-# ================= UI =================
+if 'main_df' not in st.session_state:
+    try: 
+        st.session_state.main_df = pd.read_csv("03-2026.csv").fillna("")
+    except: 
+        st.error("❌ ไม่พบไฟล์ CSV"); st.stop()
+
+if 'img_refresh_keys' not in st.session_state:
+    st.session_state.img_refresh_keys = {}
+
+@st.fragment
+def image_editor_fragment(idx, col, target_filename):
+    refresh_key = st.session_state.img_refresh_keys.get(f"{idx}_{col}", 0)
+    
+    # ดึงรูปเฉพาะเมื่อ Fragment นี้ทำงาน (Lazy Load)
+    with st.spinner("⏳"):
+        img_bytes = download_image_optimized(target_filename)
+    
+    if img_bytes:
+        st.image(img_bytes, caption=f"Drive: {target_filename}", use_container_width=True)
+    else:
+        st.caption(f"🌑 ไม่พบรูป: {target_filename}")
+    
+    new_f = st.file_uploader(f"เปลี่ยนรูป {col}", type=['jpg','png','jpeg'], key=f"fu_{idx}_{col}_{refresh_key}")
+    if new_f:
+        with st.spinner("กำลังอัปโหลด..."):
+            upload_and_overwrite(target_filename, new_f.getbuffer())
+            st.session_state.img_refresh_keys[f"{idx}_{col}"] = refresh_key + 1
+            st.toast("อัปโหลดสำเร็จ!")
+            time.sleep(0.5)
+            st.rerun()
+
+def render_main_ui(center):
+    with main_container.container():
+        st.title(f"🚀 ศูนย์: {center}")
+        df_idx = st.session_state.main_df[st.session_state.main_df['file_name'] == center].index
+        
+        for idx in df_idx:
+            row = st.session_state.main_df.loc[idx]
+            with st.expander(f"📅 {row['date']} - {row['name']}", expanded=True):
+                c = st.columns([2, 2, 1, 1])
+                st.session_state.main_df.at[idx, 'name'] = c[0].text_input("ชื่อ", row['name'], key=f"n_{idx}")
+                st.session_state.main_df.at[idx, 'status'] = c[1].text_input("ตำแหน่ง", row['status'], key=f"s_{idx}")
+                st.session_state.main_df.at[idx, 'time_in'] = c[2].text_input("เข้า", row['time_in'], key=f"i_{idx}")
+                st.session_state.main_df.at[idx, 'time_out'] = c[3].text_input("ออก", row['time_out'], key=f"o_{idx}")
+                
+                c_img = st.columns(2)
+                with c_img[0]: image_editor_fragment(idx, "img_in1", str(row["img_in1"]))
+                with c_img[1]: image_editor_fragment(idx, "img_out1", str(row["img_out1"]))
+
+        st.divider()
+        if st.button("🖨️ ออกรายงาน PDF", use_container_width=True, type="primary"):
+            with st.spinner("กำลังสร้าง PDF..."):
+                pdf = generate_pdf_original_style(st.session_state.main_df.loc[df_idx], center)
+                st.download_button("📥 ดาวน์โหลด PDF", pdf, f"{center}.pdf", "application/pdf", use_container_width=True)
+
+# --- 5. Navigation & Logic Control ---
+
 st.sidebar.title("เมนู")
 
-df_all = load_data()
-centers = sorted(df_all['file_name'].unique())
+unique_centers = st.session_state.main_df['file_name'].unique()
+def natural_sort_key(s):
+    try: return int(str(s).split('-')[0].strip())
+    except: return s
+centers_sorted = sorted(unique_centers, key=natural_sort_key)
+menu_options = ["--- กรุณาเลือกศูนย์ที่ต้องการตรวจ ---"] + centers_sorted
 
-center = st.sidebar.selectbox("เลือกศูนย์", centers)
+sel_center = st.sidebar.selectbox("เลือกศูนย์", menu_options)
+main_container = st.empty()
 
-if center:
+if sel_center == "--- กรุณาเลือกศูนย์ที่ต้องการตรวจ ---":
+    with main_container.container():
+        st.write("")
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            try: st.image("logo.png", width=125)
+            except: st.markdown("<h1 style='text-align: center;'>Chill TALK</h1>", unsafe_allow_html=True)
+        
+        st.markdown("<h1 style='text-align: center;'>ระบบจัดการรายงาน USO1</h1>", unsafe_allow_html=True)
+        st.divider()
+        st.info("""
+        **📋 ขั้นตอนการทำงาน:**
+        1. **เลือกศูนย์** ทางด้านซ้ายมือ
+        2. **ตรวจสอบงาน** เลื่อนลงดูได้ทันที (รูปภาพจะทยอยโหลดขึ้นมา)
+        3. **บันทึกข้อมูล** แก้ไขเสร็จอย่าลืมกดปุ่ม '💾 บันทึก'
+        """)
 
-    df = get_center_df(center)
+else:
+    # เคลียร์ Memory ทุกครั้งที่มีการเปลี่ยนศูนย์
+    if "current_center" not in st.session_state or st.session_state.current_center != sel_center:
+        st.session_state.current_center = sel_center
+        gc.collect() # บังคับคืน RAM ทันที
+    
+    render_main_ui(sel_center)
 
-    st.title(f"ศูนย์: {center}")
-
-    # -------- Pagination --------
-    page_size = 5
-    page = st.number_input("หน้า", min_value=1, value=1)
-
-    start = (page-1)*page_size
-    end = start + page_size
-
-    for idx, row in df.iloc[start:end].iterrows():
-
-        with st.expander(f"{row['date']} - {row['name']}"):
-
-            c = st.columns(4)
-
-            row['name'] = c[0].text_input("ชื่อ", row['name'], key=f"n{idx}")
-            row['status'] = c[1].text_input("ตำแหน่ง", row['status'], key=f"s{idx}")
-            row['time_in'] = c[2].text_input("เข้า", row['time_in'], key=f"i{idx}")
-            row['time_out'] = c[3].text_input("ออก", row['time_out'], key=f"o{idx}")
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                if st.button("โหลดรูปเข้า", key=f"btn_in{idx}"):
-                    img = load_image(row["img_in1"])
-                    if img:
-                        st.image(img)
-
-                up = st.file_uploader("เปลี่ยนรูปเข้า", key=f"up_in{idx}")
-                if up:
-                    upload_image(row["img_in1"], up.getbuffer())
-                    st.success("อัปโหลดแล้ว")
-
-            with col2:
-                if st.button("โหลดรูปออก", key=f"btn_out{idx}"):
-                    img = load_image(row["img_out1"])
-                    if img:
-                        st.image(img)
-
-                up = st.file_uploader("เปลี่ยนรูปออก", key=f"up_out{idx}")
-                if up:
-                    upload_image(row["img_out1"], up.getbuffer())
-                    st.success("อัปโหลดแล้ว")
-
-    # -------- PDF --------
-    if st.button("สร้าง PDF"):
-        with st.spinner("กำลังสร้าง..."):
-            pdf = safe_pdf(df, center)
-
-        st.download_button("ดาวน์โหลด", pdf, f"{center}.pdf")
-
-# ================= SAVE =================
-if st.sidebar.button("💾 บันทึก"):
-    df_all.to_csv("03-2026.csv", index=False)
-    st.sidebar.success("บันทึกแล้ว")
+if st.sidebar.button("💾 บันทึก ", use_container_width=True):
+    st.session_state.main_df.to_csv("03-2026.csv", index=False)
+    st.sidebar.success("บันทึกสำเร็จ!")
