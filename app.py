@@ -61,7 +61,7 @@ F_REG, F_BOLD = init_fonts()
 
 # --- 2. Google Drive Helpers (Optimized for RAM) ---
 
-@st.cache_data(ttl=120, show_spinner=False) # ลดเวลาแคชเหลือ 2 นาทีเพื่อคืน RAM ไวขึ้น
+@st.cache_data(ttl=3600, max_entries=200)# ลดเวลาแคชเหลือ 2 นาทีเพื่อคืน RAM ไวขึ้น
 def download_image_optimized(file_name):
     service = get_drive_service()
     if not service or not file_name or file_name in ["0", "nan", ""]: return None
